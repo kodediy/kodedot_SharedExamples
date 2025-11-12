@@ -1,0 +1,24 @@
+{
+  "name": "led_manager",
+  "version": "1.0.0",
+  "description": "NeoPixel LED management library",
+  "keywords": "led, neopixel, rgb, indicator",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "authors": [
+    {
+      "name": "Kode",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "homepage": "",
+  "dependencies": {
+    "esp32": "*",
+    "adafruit/Adafruit NeoPixel": "^1.10.0"
+  },
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
