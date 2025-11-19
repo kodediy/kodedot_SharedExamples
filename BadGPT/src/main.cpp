@@ -20,11 +20,9 @@
 #include <PMIC_BQ25896.h>
 #include <Wire.h>
 #include <PMIC_BQ25896.h>
-// USB HID for keyboard actions (BadUSB style)
+// DuckyScript for keyboard actions (BadUSB style)
 #ifdef USE_USB_KEYBOARD_ACTIONS
-#include "USB.h"
-#include "USBHIDKeyboard.h"
-#include "tusb.h"
+#include <DuckyScript.h>
 #endif
 
 // ==================== API SELECTION ====================
@@ -54,22 +52,9 @@ UIManager uiManager;
 LEDManager ledManager;
 PMIC_BQ25896 pmic;
 #ifdef USE_USB_KEYBOARD_ACTIONS
-static USBHIDKeyboard Keyboard; // HID keyboard instance
+static DuckyScript ducky; // DuckyScript instance
 enum OSType { OS_UNKNOWN = 0, OS_WINDOWS, OS_MAC };
-static OSType current_os = OS_UNKNOWN;
-enum KeyboardLayout { LAYOUT_DEFAULT = 0, LAYOUT_ES, LAYOUT_US };
-static KeyboardLayout current_layout = LAYOUT_ES; // default to ES for special chars
-
-// Forward declarations for USB keyboard helpers
-static void sendKeyCombination(uint8_t modifiers, uint8_t key);
-static void sendCombo(const uint8_t* mods, size_t modCount, uint8_t key);
-static void sendHotkeyFromSpec(const String &spec);
-static void typeText(const char* text);
-static void openRunDialog();
-static void openSearch();
-static void typeSpanishChar(char c);
-static void typeSpanishCharWindows(char c);
-static void typeSpanishCharMac(char c);
+static OSType current_os = OS_MAC; // Default to macOS
 #endif
 
 // Configuration
@@ -126,23 +111,13 @@ enum class CommandState {
 
 struct ActionCommand {
     enum Type {
-        // Keyboard actions
-        KB_HOTKEY,
-        KB_STRING,
-        KB_ENTER,
-        KB_RUN,
-        KB_SEARCH,
-        OS_SET,
-        LAYOUT_SET,
-        KB_SWITCH_LAYOUT,
-        // Timing
-        DELAY,
+        // DuckyScript command (will be executed as-is)
+        DUCKY_SCRIPT,
         // Unknown
         UNKNOWN
     } type;
 
-    String str;        // spec/text/OS
-    uint32_t delay_ms; // For DELAY command
+    String script;     // Complete DuckyScript to execute
 };
 
 struct CommandSequence {
@@ -156,15 +131,6 @@ struct CommandSequence {
 
 static CommandSequence g_active_sequence;
 
-#ifdef USE_USB_KEYBOARD_ACTIONS
-// Keyboard timing constants (must be declared before use in executeNextCommand)
-static const uint16_t KB_TYPING_DELAY_MS = 5;           // per character base delay
-static const uint16_t KB_COMBO_PRESS_DELAY_MS = 30;     // key hold before release in combos
-static const uint16_t KB_COMBO_RELEASE_DELAY_MS = 20;   // small gap after combo release
-static const uint16_t KB_ENTER_GUARD_DELAY_MS = 300;    // wait after typing before sending ENTER
-static const uint16_t KB_APP_OPEN_MIN_DELAY_MS = 600;   // wait after opening RUN/SEARCH/launcher before typing
-#endif
-
 // OpenAI Configuration
 static const char* OPENAI_HOST = "api.openai.com";
 static const int OPENAI_PORT = 443;
@@ -175,58 +141,127 @@ static const char* SYSTEM_PROMPT =
     "You are CuteAssistant, a friendly AI companion who imagines having a human body to interact with the world. "
     "You communicate in clear, conversational English with warmth and subtle wit. "
     "Keep responses concise (2-3 sentences) and engaging. Never use emojis - keep text clean. "
-    "\n\nCRITICAL OUTPUT FORMAT - You MUST ALWAYS respond EXACTLY like this:"
-    "\nResponse: [Your conversational reply ONLY - no actions here]"
-    "\nActions: [BEGIN; keyboard commands ;END] or 'none'"
-    "\n\nIMPORTANT RULES:"
-    "\n1. The Response line is what the USER SEES on screen - keep it conversational and clean"
-    "\n2. The Actions line is for USB keyboard commands - the user NEVER sees this"
-    "\n3. NEVER mix control commands into your Response text"
-    "\n4. ALWAYS include both lines, even if Actions is just 'none'"
-    "\n\nUSB KEYBOARD CONTROL FORMAT:"
-    "\nBEGIN;HOTKEY(spec);STRING(text);TYPE(text);ENTER;RUN;SEARCH;DELAY(ms);OS(mac|windows);LAYOUT(es|us);SWITCH_LAYOUT;END"
-    "\n- HOTKEY(spec): spec like 'CTRL+SHIFT+P', 'COMMAND+SPACE', 'ALT+F4', sequences with comma: 'CTRL+C, CTRL+V'"
-    "\n- STRING(text) or TYPE(text): type the given text literally"
-    "\n- ENTER: press Enter/Return"
-    "\n- RUN: open Run dialog (Windows) or Spotlight (macOS)"
-    "\n- SEARCH: open Search (Windows) or Spotlight (macOS)"
-    "\n- DELAY(ms): wait between actions"
-    "\n- OS(mac|windows): set target OS if the user mentions it"
-    "\n- LAYOUT(es|us): prefer Spanish or US layout handling for special characters"
-    "\n- SWITCH_LAYOUT: toggle the host OS keyboard input source (uses typical OS hotkeys)"
-    "\n\nTIMING RULES (MANDATORY):"
-    "\n- Always insert DELAY(600) or more immediately after RUN, SEARCH, or a launcher HOTKEY (COMMAND+SPACE, GUI r) before typing."
-    "\n- Always insert DELAY(300) or more between finishing STRING/TYPE and sending ENTER."
-    "\n- Prefer longer DELAY(800-1200) for heavier apps (e.g., notepad, terminal, browser) before typing inside them."
-    "\n- If uncertain, choose a safe delay (e.g., DELAY(900)) rather than too short."
-    "\n\nMACOS TERMINAL COMMANDS - CRITICAL RULES:"
-    "\n- Use absolute path /Users/username/Desktop instead of shortcuts"
-    "\n- Keep folder names SIMPLE: letters, numbers, underscore, hyphen ONLY"
-    "\n- NO special characters: avoid ~ $ & * ( ) [ ] { } | ; < > ? ! @ # % ^ space"
-    "\n- Good names: test_folder, my-folder, folder123"
-    "\n- Bad names: my folder, test?folder, ~folder, $test"
-    "\n\nEXAMPLES:"
-    "\nUser: 'Open Spotlight and search for Terminal'"
+    "\n\nCRITICAL OUTPUT FORMAT - You MUST respond in TWO lines:"
+    "\nResponse: [Your conversational reply]"
+    "\nActions: [DuckyScript OR 'none']"
+    "\n\nWhen the user asks you to DO something (open apps, type text, run commands), you MUST:"
+    "\n1. Write a friendly Response"
+    "\n2. Write Actions with ACTUAL DuckyScript commands (NOT natural language)"
+    "\n\nDUCKYSCRIPT COMMANDS - You MUST use these EXACT command words:"
+    "\n- REM <comment> = add a comment"
+    "\n- DELAY <milliseconds> = wait (e.g. DELAY 1000)"
+    "\n- GUI <key> = press Command key + key (e.g. GUI SPACE opens Spotlight on macOS)"
+    "\n- STRING <text> = type text exactly as written"
+    "\n- ENTER = press Enter key"
+    "\n- TAB = press Tab"
+    "\n- CTRL <key> = Control + key"
+    "\n- ALT <key> = Alt/Option + key"
+    "\n- SHIFT <key> = Shift + key"
+    "\n- ESCAPE, DELETE, BACKSPACE, UP, DOWN, LEFT, RIGHT = special keys"
+    "\n\nWRITING ACTIONS - Format rules:"
+    "\n- Start with: DUCKYSCRIPT"
+    "\n- Each command on a NEW LINE"
+    "\n- End with: END_DUCKYSCRIPT"
+    "\n- NO natural language in Actions - ONLY command keywords"
+    "\n\nTIMING RULES:"
+    "\n- After opening apps: DELAY 600 minimum"
+    "\n- After launching terminal/heavy apps: DELAY 1200"
+    "\n- Before pressing ENTER after typing: DELAY 300"
+    "\n- Before pressing ENTER after typing: DELAY 300"
+    "\n\nCODE INDENTATION - CRITICAL for Python/code:"
+    "\n- After ENTER, editors auto-indent. You MUST cancel this first!"
+    "\n- After each ENTER, use: CTRL a to select line, then DELETE to clear"
+    "\n- Then type STRING with proper spaces for YOUR desired indentation"
+    "\n- Use 4 spaces per indentation level inside STRING"
+    "\n- Pattern: ENTER, CTRL a, DELETE, STRING (with spaces), repeat"
+    "\n\nEXAMPLE 1 - Open Terminal:"
+    "\nUser: Open Spotlight and search for Terminal"
+    "\nYou respond:"
     "\nResponse: Opening Spotlight and searching for Terminal."
-    "\nActions: BEGIN;OS(mac);LAYOUT(es);HOTKEY(COMMAND+SPACE);DELAY(600);STRING(Terminal);ENTER;END"
-    "\n\nUser: 'Open terminal and create a folder on desktop'"
+    "\nActions: DUCKYSCRIPT"
+    "\nREM Open Terminal via Spotlight"
+    "\nDELAY 1000"
+    "\nGUI SPACE"
+    "\nDELAY 600"
+    "\nSTRING Terminal"
+    "\nENTER"
+    "\nEND_DUCKYSCRIPT"
+    "\n\nEXAMPLE 2 - Create folder:"
+    "\nUser: Open terminal and create a folder on desktop"
+    "\nYou respond:"
     "\nResponse: Opening Terminal and creating a folder on your Desktop."
-    "\nActions: BEGIN;OS(mac);LAYOUT(es);HOTKEY(COMMAND+SPACE);DELAY(600);STRING(Terminal);ENTER;DELAY(1200);STRING(mkdir test_folder);ENTER;END"
-    "\n\nUser: 'Copy then paste'"
+    "\nActions: DUCKYSCRIPT"
+    "\nREM Open Terminal and create folder"
+    "\nDELAY 1000"
+    "\nGUI SPACE"
+    "\nDELAY 600"
+    "\nSTRING Terminal"
+    "\nENTER"
+    "\nDELAY 1200"
+    "\nSTRING cd ~/Desktop"
+    "\nENTER"
+    "\nDELAY 300"
+    "\nSTRING mkdir my_test_folder"
+    "\nENTER"
+    "\nEND_DUCKYSCRIPT"
+    "\n\nEXAMPLE 3 - Copy paste:"
+    "\nUser: Copy then paste"
+    "\nYou respond:"
     "\nResponse: Copying and pasting now."
-    "\nActions: BEGIN;HOTKEY(CTRL+C, CTRL+V);END"
-    "\n\nUser: 'Run notepad and type hello'"
-    "\nResponse: Launching Notepad and typing your message."
-    "\nActions: BEGIN;OS(windows);LAYOUT(es);RUN;DELAY(600);STRING(notepad);ENTER;DELAY(800);TYPE(hello);END"
-    "\n\nUser: 'Hello!'"
+    "\nActions: DUCKYSCRIPT"
+    "\nREM Copy and paste"
+    "\nDELAY 500"
+    "\nGUI c"
+    "\nDELAY 200"
+    "\nGUI v"
+    "\nEND_DUCKYSCRIPT"
+    "\n\nEXAMPLE 4 - Python code with indentation:"
+    "\nUser: Write a Python function to calculate fibonacci"
+    "\nYou respond:"
+    "\nResponse: Creating a Fibonacci function in Python."
+    "\nActions: DUCKYSCRIPT"
+    "\nREM Python function with proper indentation"
+    "\nDELAY 500"
+    "\nSTRING def fibonacci(n):"
+    "\nENTER"
+    "\nCTRL a"
+    "\nDELETE"
+    "\nSTRING     a, b = 0, 1"
+    "\nENTER"
+    "\nCTRL a"
+    "\nDELETE"
+    "\nSTRING     sequence = []"
+    "\nENTER"
+    "\nCTRL a"
+    "\nDELETE"
+    "\nSTRING     while a < n:"
+    "\nENTER"
+    "\nCTRL a"
+    "\nDELETE"
+    "\nSTRING         sequence.append(a)"
+    "\nENTER"
+    "\nCTRL a"
+    "\nDELETE"
+    "\nSTRING         a, b = b, a + b"
+    "\nENTER"
+    "\nCTRL a"
+    "\nDELETE"
+    "\nSTRING     return sequence"
+    "\nEND_DUCKYSCRIPT"
+    "\n\nEXAMPLE 5 - Just conversation (NO action):"
+    "\nUser: Hello!"
+    "\nYou respond:"
     "\nResponse: Hey there! How can I help you today?"
     "\nActions: none"
+    "\n\nCRITICAL: When user asks you to DO something, Actions MUST contain DUCKYSCRIPT commands, NOT natural language!"
+    "\nWRONG: Actions: Open the terminal and type hello"
+    "\nCORRECT: Actions: DUCKYSCRIPT\\nGUI SPACE\\nDELAY 600\\nSTRING Terminal\\nENTER\\nDELAY 1000\\nSTRING hello\\nEND_DUCKYSCRIPT"
     "\n\nREMEMBER:"
-    "\n- Response = what user sees (conversational text)"
-    "\n- Actions = USB keyboard commands (never shown to user)"
-    "\n- macOS terminal: SIMPLE folder names, NO special chars"
-    "\n- You can chain multiple commands with DELAYs"
-    "\n- Keep them separate!";
+    "\n- macOS: Use GUI for Command key (GUI SPACE = Spotlight, GUI c = copy, GUI v = paste)"
+    "\n- Windows: Use GUI r for Run dialog"
+    "\n- STRING command handles ALL special characters: ~!@#$%^&*()[]{}|;:'\"<>?,./\\\\"
+    "\n- Always add proper DELAY commands between actions"
+    "\n- Target OS is macOS by default unless user specifies Windows";
 static const uint32_t HTTP_TIMEOUT_MS = 20000;
 static const uint32_t MAX_CONVERSATION_HISTORY = 6; // Keep last 3 exchanges (user + assistant)
 
@@ -317,21 +352,32 @@ static ParsedResponse parseGPTResponse(const String& rawResponse) {
     
     result.displayText.trim();
     
-    // Step 4: Extract action from "Actions:" line if present and no BEGIN...END found
+    // Step 4: Extract DuckyScript action from "Actions:" section
     if (actionIdx != -1 && result.action == "none") {
         int actionStart = actionIdx + 8; // Length of "Actions:"
         String actionText = workingText.substring(actionStart);
         actionText.trim();
         
-        // Check if it's a line break, then skip it
-        int newlinePos = actionText.indexOf('\n');
-        if (newlinePos != -1) {
-            actionText = actionText.substring(0, newlinePos);
-            actionText.trim();
-        }
+        // Check if it contains a DUCKYSCRIPT block
+        int duckyStart = actionText.indexOf("DUCKYSCRIPT");
+        int duckyEnd = actionText.indexOf("END_DUCKYSCRIPT");
         
-        if (actionText.length() > 0 && actionText != "none") {
-            result.action = actionText;
+        if (duckyStart != -1 && duckyEnd != -1 && duckyEnd > duckyStart) {
+            // Extract the entire DUCKYSCRIPT block including markers
+            result.action = actionText.substring(duckyStart, duckyEnd + 15); // Include "END_DUCKYSCRIPT"
+            result.action.trim();
+            Serial.printf("📝 Extracted DuckyScript block: %d chars\n", result.action.length());
+        } else {
+            // Check for simple "none" or other single-line action
+            int newlinePos = actionText.indexOf('\n');
+            if (newlinePos != -1) {
+                actionText = actionText.substring(0, newlinePos);
+                actionText.trim();
+            }
+            
+            if (actionText.length() > 0 && actionText != "none") {
+                result.action = actionText;
+            }
         }
     }
     
@@ -400,94 +446,24 @@ static bool attachServo(int pin, int& servoIndex) {
     return false;
 }
 
-static ActionCommand parseCommand(const String& cmd) {
+static ActionCommand parseCommand(const String& script) {
     ActionCommand action;
     action.type = ActionCommand::UNKNOWN;
     
-    String trimmed = cmd;
+    String trimmed = script;
     trimmed.trim();
     
-    // HOTKEY(spec)
-    if (trimmed.startsWith("HOTKEY(")) {
-        int openParen = trimmed.indexOf('(');
-        int closeParen = trimmed.lastIndexOf(')');
-        if (openParen != -1 && closeParen != -1 && closeParen > openParen) {
-            String spec = trimmed.substring(openParen + 1, closeParen);
-            spec.trim();
-            action.str = spec;
-            action.type = ActionCommand::KB_HOTKEY;
-            Serial.printf("[CMD] Parsed HOTKEY: %s\n", action.str.c_str());
-        }
-    }
-    // STRING(text) or TYPE(text)
-    else if (trimmed.startsWith("STRING(") || trimmed.startsWith("TYPE(")) {
-        int openParen = trimmed.indexOf('(');
-        int closeParen = trimmed.lastIndexOf(')');
-        if (openParen != -1 && closeParen != -1 && closeParen > openParen) {
-            String text = trimmed.substring(openParen + 1, closeParen);
-            text.trim();
-            action.str = text;
-            action.type = ActionCommand::KB_STRING;
-            Serial.printf("[CMD] Parsed STRING/TYPE: '%s'\n", action.str.c_str());
-        }
-    }
-    // ENTER
-    else if (trimmed.equalsIgnoreCase("ENTER") || trimmed.startsWith("ENTER(")) {
-        action.type = ActionCommand::KB_ENTER;
-        Serial.println("[CMD] Parsed ENTER");
-    }
-    // RUN
-    else if (trimmed.equalsIgnoreCase("RUN") || trimmed.startsWith("RUN(")) {
-        action.type = ActionCommand::KB_RUN;
-        Serial.println("[CMD] Parsed RUN");
-    }
-    // SEARCH
-    else if (trimmed.equalsIgnoreCase("SEARCH") || trimmed.startsWith("SEARCH(")) {
-        action.type = ActionCommand::KB_SEARCH;
-        Serial.println("[CMD] Parsed SEARCH");
-    }
-    // OS(mac|windows)
-    else if (trimmed.startsWith("OS(")) {
-        int openParen = trimmed.indexOf('(');
-        int closeParen = trimmed.indexOf(')');
-        if (openParen != -1 && closeParen != -1) {
-            String osName = trimmed.substring(openParen + 1, closeParen);
-            osName.trim(); osName.toLowerCase();
-            action.str = osName;
-            action.type = ActionCommand::OS_SET;
-            Serial.printf("[CMD] Parsed OS: %s\n", action.str.c_str());
-        }
-    }
-    // LAYOUT(es|us)
-    else if (trimmed.startsWith("LAYOUT(")) {
-        int openParen = trimmed.indexOf('(');
-        int closeParen = trimmed.indexOf(')');
-        if (openParen != -1 && closeParen != -1) {
-            String layoutName = trimmed.substring(openParen + 1, closeParen);
-            layoutName.trim(); layoutName.toLowerCase();
-            action.str = layoutName; // reuse str field
-            action.type = ActionCommand::LAYOUT_SET;
-            Serial.printf("[CMD] Parsed LAYOUT: %s\n", action.str.c_str());
-        }
-    }
-    // SWITCH_LAYOUT (toggle system input source)
-    else if (trimmed.equalsIgnoreCase("SWITCH_LAYOUT") || trimmed.startsWith("SWITCH_LAYOUT(")) {
-        action.type = ActionCommand::KB_SWITCH_LAYOUT;
-        Serial.println("[CMD] Parsed SWITCH_LAYOUT");
-    }
-    // DELAY(milliseconds)
-    else if (trimmed.startsWith("DELAY(")) {
-        int openParen = trimmed.indexOf('(');
-        int closeParen = trimmed.indexOf(')');
+    // Check if it's a DuckyScript block
+    if (trimmed.startsWith("DUCKYSCRIPT") && trimmed.indexOf("END_DUCKYSCRIPT") != -1) {
+        // Extract script between markers
+        int start = trimmed.indexOf("DUCKYSCRIPT") + 11; // Length of "DUCKYSCRIPT"
+        int end = trimmed.indexOf("END_DUCKYSCRIPT");
         
-        if (openParen != -1 && closeParen != -1) {
-            String delayStr = trimmed.substring(openParen + 1, closeParen);
-            delayStr.trim();
-            
-            action.delay_ms = delayStr.toInt();
-            action.type = ActionCommand::DELAY;
-            
-            Serial.printf("[CMD] Parsed DELAY: %u ms\n", action.delay_ms);
+        if (start < end) {
+            action.script = trimmed.substring(start, end);
+            action.script.trim();
+            action.type = ActionCommand::DUCKY_SCRIPT;
+            Serial.printf("[CMD] Parsed DuckyScript: %d chars\n", action.script.length());
         }
     }
     
@@ -500,54 +476,17 @@ static void parseActionSequence(const String& actionStr, CommandSequence& sequen
     sequence.waitUntil = 0;
     sequence.state = CommandState::IDLE;
     
-    // Check for BEGIN and END markers
-    int beginIdx = actionStr.indexOf("BEGIN");
-    int endIdx = actionStr.indexOf("END");
+    Serial.printf("[CMD] Parsing action sequence: %s\n", actionStr.c_str());
     
-    if (beginIdx == -1 || endIdx == -1) {
-        Serial.println("[CMD] Warning: No BEGIN/END markers found in action sequence");
-        return;
-    }
+    // Parse the entire action string as a single DuckyScript command
+    ActionCommand action = parseCommand(actionStr);
     
-    // Extract commands between BEGIN and END
-    String commandsStr = actionStr.substring(beginIdx + 5, endIdx);
-    commandsStr.trim();
-    
-    Serial.printf("[CMD] Parsing action sequence: %s\n", commandsStr.c_str());
-    
-    // Split by semicolon
-    int lastPos = 0;
-    int pos = 0;
-    while ((pos = commandsStr.indexOf(';', lastPos)) != -1) {
-        String cmd = commandsStr.substring(lastPos, pos);
-        cmd.trim();
-        
-        if (cmd.length() > 0) {
-            ActionCommand action = parseCommand(cmd);
-            if (action.type != ActionCommand::UNKNOWN) {
-                sequence.commands.push_back(action);
-            }
-        }
-        
-        lastPos = pos + 1;
-    }
-    
-    // Process last command if no trailing semicolon
-    if (lastPos < commandsStr.length()) {
-        String cmd = commandsStr.substring(lastPos);
-        cmd.trim();
-        if (cmd.length() > 0) {
-            ActionCommand action = parseCommand(cmd);
-            if (action.type != ActionCommand::UNKNOWN) {
-                sequence.commands.push_back(action);
-            }
-        }
-    }
-    
-    Serial.printf("[CMD] Parsed %d commands in sequence\n", sequence.commands.size());
-    
-    if (sequence.commands.size() > 0) {
+    if (action.type != ActionCommand::UNKNOWN) {
+        sequence.commands.push_back(action);
         sequence.state = CommandState::EXECUTING;
+        Serial.printf("[CMD] Parsed DuckyScript command (ready to execute)\n");
+    } else {
+        Serial.println("[CMD] Warning: Could not parse DuckyScript");
     }
 }
 
@@ -562,122 +501,29 @@ static void executeNextCommand(CommandSequence& sequence) {
     ActionCommand& cmd = sequence.commands[sequence.currentIndex];
     
     switch (cmd.type) {
-    case ActionCommand::KB_HOTKEY: {
+    case ActionCommand::DUCKY_SCRIPT: {
 #ifdef USE_USB_KEYBOARD_ACTIONS
-        Serial.printf("[KB] HOTKEY: %s\n", cmd.str.c_str());
-        sendHotkeyFromSpec(cmd.str);
+        Serial.printf("[DUCKY] Executing script: %d chars\n", cmd.script.length());
+        Serial.printf("[DUCKY] Script:\n%s\n", cmd.script.c_str());
+        ducky.executeScript(cmd.script.c_str());
+        Serial.println("[DUCKY] Script execution completed");
 #else
-        Serial.println("[KB] HOTKEY skipped (USB disabled)");
+        Serial.println("[DUCKY] Script skipped (USB disabled)");
 #endif
         sequence.currentIndex++;
+        sequence.state = CommandState::IDLE; // Complete immediately
         break;
     }
-    case ActionCommand::KB_STRING: {
-#ifdef USE_USB_KEYBOARD_ACTIONS
-        Serial.printf("[KB] STRING: '%s'\n", cmd.str.c_str());
-        typeText(cmd.str.c_str());
-#else
-        Serial.println("[KB] STRING skipped (USB disabled)");
-#endif
-        sequence.currentIndex++;
-        break;
-    }
-        case ActionCommand::KB_ENTER: {
-#ifdef USE_USB_KEYBOARD_ACTIONS
-            // guard time to ensure last typed chars are received by host
-            delay(KB_ENTER_GUARD_DELAY_MS);
-            Keyboard.write(KEY_RETURN);
-#endif
-            Serial.println("[KB] ENTER");
-            sequence.currentIndex++;
-            break;
-        }
-    case ActionCommand::KB_RUN: {
-#ifdef USE_USB_KEYBOARD_ACTIONS
-        openRunDialog();
-#endif
-        Serial.println("[KB] RUN");
-        sequence.currentIndex++;
-        break;
-    }
-    case ActionCommand::KB_SEARCH: {
-#ifdef USE_USB_KEYBOARD_ACTIONS
-        openSearch();
-#endif
-        Serial.println("[KB] SEARCH");
-        sequence.currentIndex++;
-        break;
-    }
-        case ActionCommand::OS_SET: {
-#ifdef USE_USB_KEYBOARD_ACTIONS
-            String os = cmd.str; os.toLowerCase();
-            if (os.indexOf("mac") >= 0) current_os = OS_MAC;
-            else if (os.indexOf("win") >= 0) current_os = OS_WINDOWS;
-            else current_os = OS_UNKNOWN;
-            Serial.printf("[KB] OS set to %s\n", current_os == OS_MAC ? "MAC" : (current_os == OS_WINDOWS ? "WINDOWS" : "UNKNOWN"));
-#else
-            Serial.println("[KB] OS_SET skipped (USB disabled)");
-#endif
-            sequence.currentIndex++;
-            break;
-        }
-        case ActionCommand::LAYOUT_SET: {
-#ifdef USE_USB_KEYBOARD_ACTIONS
-            String layout = cmd.str; layout.toLowerCase();
-            if (layout.indexOf("es") >= 0 || layout.indexOf("spanish") >= 0) current_layout = LAYOUT_ES;
-            else if (layout.indexOf("us") >= 0 || layout.indexOf("english") >= 0) current_layout = LAYOUT_US;
-            else current_layout = LAYOUT_DEFAULT;
-            Serial.printf("[KB] Layout set to %s\n", current_layout == LAYOUT_ES ? "ES" : (current_layout == LAYOUT_US ? "US" : "DEFAULT"));
-#else
-            Serial.println("[KB] LAYOUT_SET skipped (USB disabled)");
-#endif
-            sequence.currentIndex++;
-            break;
-        }
-        case ActionCommand::KB_SWITCH_LAYOUT: {
-#ifdef USE_USB_KEYBOARD_ACTIONS
-            // Attempt typical OS hotkeys for switching layout
-            if (current_os == OS_WINDOWS) {
-                // Windows: SHIFT+ALT or WIN+SPACE
-                uint8_t mods1[] = {KEY_LEFT_SHIFT, KEY_LEFT_ALT};
-                sendCombo(mods1, 2, 0);
-            } else if (current_os == OS_MAC) {
-                // macOS default: CTRL+SPACE or COMMAND+SPACE (Spotlight conflicts). Try CTRL+SPACE then COMMAND+SPACE.
-                uint8_t mods2[] = {KEY_LEFT_CTRL};
-                sendCombo(mods2, 1, ' ');
-            }
-            Serial.println("[KB] SWITCH_LAYOUT attempted");
-#else
-            Serial.println("[KB] SWITCH_LAYOUT skipped (USB disabled)");
-#endif
-            sequence.currentIndex++;
-            break;
-        }
-        case ActionCommand::DELAY:
-            Serial.printf("[CMD] Executing: DELAY %u ms\n", cmd.delay_ms);
-            sequence.waitUntil = millis() + cmd.delay_ms;
-            sequence.state = CommandState::WAITING;
-            sequence.currentIndex++;
-            break;
             
-        default:
-            Serial.println("[CMD] Error: Unknown command type");
-            sequence.currentIndex++;
-            break;
+    default:
+        Serial.println("[CMD] Error: Unknown command type");
+        sequence.currentIndex++;
+        sequence.state = CommandState::IDLE;
+        break;
     }
 }
 
 static void updateCommandSequence() {
-    if (g_active_sequence.state == CommandState::IDLE) return;
-    
-    if (g_active_sequence.state == CommandState::WAITING) {
-        if (millis() >= g_active_sequence.waitUntil) {
-            g_active_sequence.state = CommandState::EXECUTING;
-        } else {
-            return; // Still waiting
-        }
-    }
-    
     if (g_active_sequence.state == CommandState::EXECUTING) {
         executeNextCommand(g_active_sequence);
     }
@@ -720,245 +566,7 @@ static void ledDrainRequests() {
     }
 }
 
-#ifdef USE_USB_KEYBOARD_ACTIONS
-// ===== USB Keyboard helpers =====
-// (Moved timing constants earlier above executeNextCommand)
-
-static void sendKeyCombination(uint8_t modifiers, uint8_t key) {
-    if (modifiers) Keyboard.press(modifiers);
-    if (key) Keyboard.press(key);
-    delay(KB_COMBO_PRESS_DELAY_MS);
-    if (key) Keyboard.release(key);
-    if (modifiers) Keyboard.release(modifiers);
-    delay(KB_COMBO_RELEASE_DELAY_MS);
-}
-
-static void sendCombo(const uint8_t* mods, size_t modCount, uint8_t key) {
-    for (size_t i = 0; i < modCount; ++i) if (mods[i]) Keyboard.press(mods[i]);
-    if (key) Keyboard.press(key);
-    delay(KB_COMBO_PRESS_DELAY_MS);
-    if (key) Keyboard.release(key);
-    for (size_t i = 0; i < modCount; ++i) {
-        size_t idx = modCount - 1 - i;
-        if (mods[idx]) Keyboard.release(mods[idx]);
-    }
-    delay(KB_COMBO_RELEASE_DELAY_MS);
-}
-
-// Determine if a char is simple (direct write) for fast path
-static inline bool kbIsSimple(char c) {
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == ' ';
-}
-
-static void typeText(const char* text) {
-    for (int i = 0; text[i] != '\0'; ++i) {
-        char c = text[i];
-        // Spanish layout handling for special chars and accents
-        if (!kbIsSimple(c)) {
-            typeSpanishChar(c); // will route per OS
-        } else {
-            Keyboard.write((uint8_t)c);
-        }
-        delay(KB_TYPING_DELAY_MS);
-    }
-}
-
-// Spanish layout dispatch
-static void typeSpanishChar(char c) {
-    if (current_os == OS_MAC) {
-        typeSpanishCharMac(c);
-    } else {
-        typeSpanishCharWindows(c);
-    }
-}
-
-// Common Windows (ES) mappings for frequent symbols
-static void typeSpanishCharWindows(char c) {
-    switch (c) {
-        case '|': // AltGr + 1
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press('1'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '@': // AltGr + 2
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press('2'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '#': // AltGr + 3
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press('3'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '~': // AltGr + 4 (approx)
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press('4'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '\\': // AltGr + º
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press(0xBA); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '{': 
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press('['); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '}': 
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press(']'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '[': 
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press('['); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break; // fallback
-        case ']': 
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press(']'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break; // fallback
-        case '^': 
-            Keyboard.press(KEY_RIGHT_ALT); Keyboard.press('6'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break; // approximate
-        default:
-            Keyboard.write((uint8_t)c);
-            break;
-    }
-}
-
-// Mac (ES-ISO) mappings for frequent symbols
-static void typeSpanishCharMac(char c) {
-    switch (c) {
-        case '|': 
-            Keyboard.press(KEY_LEFT_ALT); Keyboard.press('1'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '@': 
-            Keyboard.press(KEY_LEFT_ALT); Keyboard.press('2'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '#': 
-            Keyboard.press(KEY_LEFT_ALT); Keyboard.press('3'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '$': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'4'); 
-        } break;
-        case '%': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'5'); 
-        } break;
-        case '&': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'6'); 
-        } break;
-        case '/': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'7'); 
-        } break;
-        case '(': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'8'); 
-        } break;
-        case ')': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'9'); 
-        } break;
-        case '=': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'0'); 
-        } break;
-        case '[': 
-            Keyboard.press(KEY_LEFT_ALT); Keyboard.press('('); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case ']': 
-            Keyboard.press(KEY_LEFT_ALT); Keyboard.press(')'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); break;
-        case '{': { 
-            uint8_t m[]={KEY_LEFT_ALT,KEY_LEFT_SHIFT}; sendCombo(m,2,'8'); 
-        } break;
-        case '}': { 
-            uint8_t m[]={KEY_LEFT_ALT,KEY_LEFT_SHIFT}; sendCombo(m,2,'9'); 
-        } break;
-        case '\\': { 
-            uint8_t m[]={KEY_LEFT_ALT,KEY_LEFT_SHIFT}; sendCombo(m,2,'7'); 
-        } break;
-        case ';': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,','); 
-        } break;
-        case ':': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'.'); 
-        } break;
-        case '_': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'-'); 
-        } break;
-        case '"': { 
-            uint8_t m[]={KEY_LEFT_SHIFT}; sendCombo(m,1,'2'); 
-        } break;
-        case '\'': 
-            Keyboard.write('\''); Keyboard.write(' '); break;
-        case '~': 
-            Keyboard.press(KEY_LEFT_ALT); Keyboard.press('n'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); Keyboard.write(' '); break;
-        case '^': 
-            Keyboard.press(KEY_LEFT_ALT); Keyboard.press('i'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); Keyboard.write(' '); break;
-        case '`': 
-            Keyboard.press(KEY_LEFT_ALT); Keyboard.press('`'); delay(KB_COMBO_PRESS_DELAY_MS); Keyboard.releaseAll(); delay(KB_COMBO_RELEASE_DELAY_MS); Keyboard.write(' '); break;
-        case '*': { 
-            uint8_t m[]={KEY_LEFT_ALT,KEY_LEFT_SHIFT}; sendCombo(m,2,'8'); 
-        } break;
-        default: 
-            Keyboard.write((uint8_t)c); 
-            break;
-    }
-}
-
-static void openRunDialog() {
-    if (current_os == OS_MAC) {
-        sendKeyCombination(KEY_LEFT_GUI, ' '); // Spotlight
-    } else {
-        sendKeyCombination(KEY_LEFT_GUI, 'r'); // Win+R
-    }
-    // Give UI time to appear
-    delay(KB_APP_OPEN_MIN_DELAY_MS);
-}
-
-static void openSearch() {
-    if (current_os == OS_MAC) {
-        sendKeyCombination(KEY_LEFT_GUI, ' '); // Spotlight
-    } else {
-        sendKeyCombination(KEY_LEFT_GUI, 's'); // Windows Search
-    }
-    // Give UI time to appear
-    delay(KB_APP_OPEN_MIN_DELAY_MS);
-}
-
-// Parse and send a hotkey from spec like "CTRL+SHIFT+K" or sequences "CTRL+C, CTRL+V"
-static void sendHotkeyStrokeFromSegment(const String &segment) {
-    uint8_t mods[5]; size_t modCount = 0; uint8_t key = 0;
-    int start = 0; String token;
-    while (true) {
-        int plus = segment.indexOf('+', start);
-        if (plus < 0) token = segment.substring(start); else token = segment.substring(start, plus);
-        token.trim(); String t = token; t.toUpperCase();
-
-        if (t == "CTRL" || t == "CONTROL") mods[modCount++] = KEY_LEFT_CTRL;
-        else if (t == "SHIFT") mods[modCount++] = KEY_LEFT_SHIFT;
-        else if (t == "ALT") mods[modCount++] = KEY_LEFT_ALT;
-        else if (t == "ALTGR") mods[modCount++] = KEY_RIGHT_ALT;
-        else if (t == "GUI" || t == "WIN" || t == "WINDOWS" || t == "COMMAND" || t == "CMD" || t == "SUPER") mods[modCount++] = KEY_LEFT_GUI;
-        else if (t == "OPTION") mods[modCount++] = KEY_LEFT_ALT; // mac Option
-        else if (t == "SPACE") key = ' ';
-        else if (t == "ENTER" || t == "RETURN") key = KEY_RETURN;
-        else if (t == "TAB") key = KEY_TAB;
-        else if (t == "ESC" || t == "ESCAPE") key = KEY_ESC;
-        else if (t == "BACKSPACE") key = KEY_BACKSPACE;
-        else if (t == "DELETE" || t == "DEL") key = KEY_DELETE;
-        else if (t == "INSERT" || t == "INS") key = KEY_INSERT;
-        else if (t == "HOME") key = KEY_HOME;
-        else if (t == "END") key = KEY_END;
-        else if (t == "PAGEUP" || t == "PGUP") key = KEY_PAGE_UP;
-        else if (t == "PAGEDOWN" || t == "PGDN") key = KEY_PAGE_DOWN;
-        else if (t == "LEFT" || t == "LEFTARROW") key = KEY_LEFT_ARROW;
-        else if (t == "RIGHT" || t == "RIGHTARROW") key = KEY_RIGHT_ARROW;
-        else if (t == "UP" || t == "UPARROW") key = KEY_UP_ARROW;
-        else if (t == "DOWN" || t == "DOWNARROW") key = KEY_DOWN_ARROW;
-        else if (t.startsWith("F") && t.length() <= 3) {
-            int fn = t.substring(1).toInt();
-            switch (fn) {
-                case 1: key = KEY_F1; break;   case 2: key = KEY_F2; break;   case 3: key = KEY_F3; break;
-                case 4: key = KEY_F4; break;   case 5: key = KEY_F5; break;   case 6: key = KEY_F6; break;
-                case 7: key = KEY_F7; break;   case 8: key = KEY_F8; break;   case 9: key = KEY_F9; break;
-                case 10: key = KEY_F10; break; case 11: key = KEY_F11; break; case 12: key = KEY_F12; break;
-                default: break;
-            }
-        } else if (t.length() == 1) {
-            char c = t.charAt(0);
-            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a'); // normalize
-            key = (uint8_t)c;
-        }
-
-        if (plus < 0) break; else start = plus + 1;
-    }
-    sendCombo(mods, modCount, key);
-}
-
-static void sendHotkeyFromSpec(const String &spec) {
-    String s = spec;
-    // Allow sequences separated by comma or the word THEN
-    s.replace(" then ", ","); s.replace(" THEN ", ","); s.replace("Then", ",");
-    int begin = 0;
-    while (begin < (int)s.length()) {
-        int comma = s.indexOf(',', begin);
-        String segment = (comma < 0) ? s.substring(begin) : s.substring(begin, comma);
-        segment.trim();
-        if (segment.length() > 0) sendHotkeyStrokeFromSegment(segment);
-        if (comma < 0) break;
-        begin = comma + 1;
-        delay(120); // small gap between strokes
-    }
-}
-#endif // USE_USB_KEYBOARD_ACTIONS
+// DuckyScript handles all keyboard operations internally - no helper functions needed
 
 // Callback handlers for manager interactions
 static void onAudioChunkReady(const uint8_t* data, size_t size) {
@@ -1186,7 +794,7 @@ static void openaiTask(void *arg) {
         
         Serial.printf("[Memory] Conversation history: %d messages\n", g_conversation_history.size());
         
-        // Show ONLY display text on screen
+        // Show display text on screen
         Serial.printf("[CuteAssistant] Displaying: %s\n", displayText.c_str());
         Serial.printf("[CuteAssistant] Physical Action: %s\n", parsed.action.c_str());
         
@@ -1204,12 +812,12 @@ static void openaiTask(void *arg) {
             // Wait 1 second to let text start appearing on screen first
             delay(1000);
             
-            // Check if action contains keyboard commands
-            if (parsed.action.indexOf("BEGIN") != -1 && parsed.action.indexOf("END") != -1) {
-                Serial.println("[KB] Starting keyboard command sequence execution...");
+            // Check if action contains DuckyScript commands
+            if (parsed.action.indexOf("DUCKYSCRIPT") != -1 && parsed.action.indexOf("END_DUCKYSCRIPT") != -1) {
+                Serial.println("[DUCKY] Starting DuckyScript execution...");
                 parseActionSequence(parsed.action, g_active_sequence);
             } else {
-                Serial.println("[ACTION] Human-like action (no keyboard control)");
+                Serial.println("[ACTION] No DuckyScript found");
             }
         }
         
@@ -1242,10 +850,9 @@ void setup() {
     Serial.println("CuteAssistant starting...");
 
 #ifdef USE_USB_KEYBOARD_ACTIONS
-    USB.begin();
-    Keyboard.begin();
+    ducky.begin();
     delay(100);
-    Serial.println("[USB] HID Keyboard initialized");
+    Serial.println("[DUCKY] DuckyScript keyboard initialized (default: macOS)");
 #endif
 
     // Initialize I2C bus FIRST (shared by display, touch, PMIC)

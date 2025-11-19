@@ -1,0 +1,23 @@
+{
+  "name": "audio_manager",
+  "version": "1.0.0",
+  "description": "Audio recording and processing library for ESP32-S3",
+  "keywords": "audio, i2s, recording, pcm",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "authors": [
+    {
+      "name": "Kode",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "homepage": "",
+  "dependencies": {
+    "esp32": "*"
+  },
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
