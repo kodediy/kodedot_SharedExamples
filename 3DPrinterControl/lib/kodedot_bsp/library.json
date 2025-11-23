@@ -1,0 +1,22 @@
+{
+  "name": "KodeDotBSP",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Board Support Package for Kode Dot: display, LVGL and touch bring-up.",
+  "authors": [
+    {
+      "name": "Kode Project",
+      "maintainer": true
+    }
+  ],
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src"
+  },
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "headers": [
+    "kodedot/display_manager.h",
+    "kodedot/pin_config.h"
+  ]
+}

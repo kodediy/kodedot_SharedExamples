@@ -1,0 +1,14 @@
+{
+  "name": "wifi_manager_lib",
+  "version": "0.1.0",
+  "license": "MIT",
+  "authors": [
+    { "name": "BasicGPT Team" }
+  ],
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include"
+  }
+}

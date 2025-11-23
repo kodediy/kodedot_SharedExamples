@@ -1,0 +1,30 @@
+{
+  "name": "Printer",
+  "version": "1.0.0",
+  "description": "3D Printer management library for CrowPanel and Moonraker integration",
+  "keywords": ["3d-printer", "moonraker", "klipper", "esp32", "wifi", "crowpanel", "lvgl"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kodediy/3D-printer-lib.git"
+  },
+  "authors": [
+    {
+      "name": "Kode Team",
+      "email": "info@kode.diy",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "homepage": "https://kode.diy",
+  "dependencies": [
+    {
+      "name": "ArduinoJson",
+      "version": "^6.19.0"
+    }
+  ],
+  "frameworks": ["arduino", "espidf"],
+  "platforms": ["espressif32"],
+  "build": {
+    "libCompatMode": "strict"
+  }
+}

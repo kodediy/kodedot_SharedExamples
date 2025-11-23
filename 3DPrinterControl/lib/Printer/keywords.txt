@@ -1,0 +1,38 @@
+#######################################
+# Syntax Coloring Map For Printer
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+MOONRAKER	KEYWORD1
+crowpanel_config_t	KEYWORD1
+crowpanel_wifi_scan_t	KEYWORD1
+wifi_status_t	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+crowpanel_init	KEYWORD2
+wifi_connect	KEYWORD2
+wifi_get_connect_status	KEYWORD2
+wifi_task	KEYWORD2
+send_request	KEYWORD2
+http_post_loop	KEYWORD2
+post_to_queue	KEYWORD2
+post_gcode_to_queue	KEYWORD2
+get_printer_ready	KEYWORD2
+get_printer_info	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+WIFI_STATUS_DISCONNECTED	LITERAL1
+WIFI_STATUS_CONNECTING	LITERAL1
+WIFI_STATUS_CONNECTED	LITERAL1
+WIFI_STATUS_ERROR	LITERAL1
+SCAN_SSIDS_NUM	LITERAL1
+QUEUE_LEN	LITERAL1

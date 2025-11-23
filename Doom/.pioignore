@@ -1,0 +1,15 @@
+# Exclude legacy Arduino sketch and AVR-only drivers from build
+src/doom.ino
+src/SSD1306.cpp
+src/SSD1306.h
+src/TWI_Master.cpp
+src/TWI_Master.h
+
+# Exclude old display/sound headers that are AVR-specific or duplicate
+src/display.h
+src/sound.h
+
+# Misc non-code artifacts
+src/diagram.json
+src/libraries.txt
+src/wokwi-project.txt
